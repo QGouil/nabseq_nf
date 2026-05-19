@@ -104,7 +104,6 @@ process pre_consensus_groupings {
         separate_rows(igblast_results_grouped_L, reads, sep = "_"),
         separate_rows(igblast_results_grouped_H, reads, sep = "_"))
 
-    # get the longest read in each group (since it's more likely to have a full-length C region)
     # find read length from the nucleotide sequence
     # first just keep only essential columns
     igblast_results_grouped_long %>%
@@ -112,37 +111,38 @@ process pre_consensus_groupings {
 
     # get nucleotide sequence from original table
     # join them, remove those rows that don't belong to a group and determine read length
-    # finally, just choose the longest reads for each group
-    # EDIT: [21/12/22] we actually need to choose the longest read that also has a complete VDJ
-    # otherwise we risk outputting a truncated consensus sequence
+    # finally, choose the read with length closest to the target (1600 for H, 980 for L)
+    # we still prioritize reads that have a complete VDJ
     igblast_results %>%
         select(c(sequence_id, sequence, complete_vdj)) %>%
         left_join(igblast_results_grouped_long, by = c("sequence_id" = "reads")) %>%
         filter(!is.na(group_id)) %>%
         filter(complete_vdj == TRUE) %>%
         mutate(read_length = nchar(sequence)) %>%
+        mutate(target_length = ifelse(str_detect(group_id, "_H\\d+_count_"), 1600, 980)) %>%
         select(-c(sequence)) %>%
         group_by(group_id) %>%
-        slice(which.max(read_length)) -> igblast_results_grouped_longest_complete_reads
+        slice(which.min(abs(read_length - target_length))) -> igblast_results_grouped_best_complete_reads
 
     # but sometimes we might not have any complete VDJ for a group
-    # in that case, just choose the longest read
+    # in that case, choose the read with length closest to target
     igblast_results %>%
         select(c(sequence_id, sequence)) %>%
         left_join(igblast_results_grouped_long, by = c("sequence_id" = "reads")) %>%
         filter(!is.na(group_id)) %>%
         mutate(read_length = nchar(sequence)) %>%
+        mutate(target_length = ifelse(str_detect(group_id, "_H\\d+_count_"), 1600, 980)) %>%
         select(-c(sequence)) %>%
         group_by(group_id) %>%
-        slice(which.max(read_length)) -> igblast_results_grouped_longest_reads
+        slice(which.min(abs(read_length - target_length))) -> igblast_results_grouped_best_reads
 
-    # remove the rows of igblast_results_grouped_longest_reads that appear in igblast_results_grouped_longest_complete_reads
-    igblast_results_grouped_longest_reads %>%
-        anti_join(igblast_results_grouped_longest_complete_reads, by = c("group_id" = "group_id")) -> igblast_results_grouped_longest_reads_no_dupes
+    # remove the rows of igblast_results_grouped_best_reads that appear in igblast_results_grouped_best_complete_reads
+    igblast_results_grouped_best_reads %>%
+        anti_join(igblast_results_grouped_best_complete_reads, by = c("group_id" = "group_id")) -> igblast_results_grouped_best_reads_no_dupes
 
     # then can combine the two tables to come up with our starting point master list
-    igblast_results_grouped_longest_complete_reads %>%
-        bind_rows(igblast_results_grouped_longest_reads_no_dupes) -> starting_point_reads
+    igblast_results_grouped_best_complete_reads %>%
+        bind_rows(igblast_results_grouped_best_reads_no_dupes) -> starting_point_reads
 
     # write out these longest reads as the starting copies
     for (i in seq_along(unlist(as.vector(starting_point_reads[, "group_id"])))) {
